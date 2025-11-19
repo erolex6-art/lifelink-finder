@@ -1,238 +1,305 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import Layout from "@/components/Layout";
+import { useAuth } from "@/contexts/AuthContext";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { Droplets, MapPin, Calendar, Activity } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Droplets, AlertCircle, Loader2, Heart } from "lucide-react";
+
+interface Request {
+  id: string;
+  seeker_id: string;
+  message?: string;
+  status: "pending" | "fulfilled" | "cancelled";
+  created_at: string;
+  blood_type?: string;
+  urgency_level?: string;
+  profiles?: {
+    full_name: string;
+    email: string;
+  };
+}
 
 const DonorDashboard = () => {
+  const { user, profile } = useAuth();
   const { toast } = useToast();
-  const [donorProfile, setDonorProfile] = useState<any>(null);
-  const [requests, setRequests] = useState<any[]>([]);
+  const [requests, setRequests] = useState<Request[]>([]);
   const [loading, setLoading] = useState(true);
-  const [toggling, setToggling] = useState(false);
+  const [donating, setDonating] = useState<string | null>(null);
+  const [donationAmount, setDonationAmount] = useState("");
+  const [donationDialogOpen, setDonationDialogOpen] = useState<string | null>(null);
 
   useEffect(() => {
-    loadDonorData();
+    loadRequests();
   }, []);
 
-  const loadDonorData = async () => {
+  const loadRequests = async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-
-      const { data: profile } = await supabase
-        .from("donor_profiles")
-        .select("*")
-        .eq("user_id", user.id)
-        .single();
-
-      setDonorProfile(profile);
-
-      const { data: requestsData } = await supabase
+      // Fetch ALL pending requests from database (any seeker's requests)
+      const { data, error } = await supabase
         .from("blood_requests")
-        .select(`
-          *,
-          profiles:seeker_id (full_name, email)
-        `)
-        .eq("donor_id", user.id)
-        .order("created_at", { ascending: false })
-        .limit(5);
+        .select("*")
+        .eq("status", "pending")
+        .order("created_at", { ascending: false });
 
-      setRequests(requestsData || []);
+      if (error) throw error;
+
+      console.log("Loaded blood requests:", data);
+
+      // Load profiles for each request to get seeker names
+      const requestsWithProfiles = await Promise.all(
+        (data || []).map(async (request: any) => {
+          const { data: profileData } = await supabase
+            .from("profiles")
+            .select("full_name, email")
+            .eq("id", request.seeker_id)
+            .single();
+
+          return {
+            ...request,
+            profiles: profileData || { full_name: "Anonymous", email: "" }
+          };
+        })
+      );
+
+      setRequests(requestsWithProfiles as Request[]);
     } catch (error) {
-      console.error("Error loading donor data:", error);
+      console.error("Error loading requests:", error);
+      toast({
+        title: "Error loading requests",
+        description: "Unable to fetch blood requests. Please try again later.",
+        variant: "destructive",
+      });
+      setRequests([]);
     } finally {
       setLoading(false);
     }
   };
 
-  const toggleAvailability = async () => {
-    if (!donorProfile) return;
-    
-    setToggling(true);
-    try {
-      const newStatus = !donorProfile.is_available;
-      
-      const { error } = await supabase
-        .from("donor_profiles")
-        .update({ is_available: newStatus })
-        .eq("id", donorProfile.id);
+  const handleDonate = async (requestId: string) => {
+    if (!user) return;
 
-      if (error) throw error;
-
-      setDonorProfile({ ...donorProfile, is_available: newStatus });
-      
+    const amount = parseFloat(donationAmount);
+    if (isNaN(amount) || amount <= 0) {
       toast({
-        title: newStatus ? "You're now available!" : "Status updated",
-        description: newStatus 
-          ? "Seekers can now find and contact you." 
-          : "You're marked as unavailable.",
+        title: "Invalid amount",
+        description: "Please enter a valid donation amount.",
+        variant: "destructive",
       });
+      return;
+    }
+
+    setDonating(requestId);
+    try {
+      // Create donation record
+      const { error: donationError } = await supabase
+        .from("donations")
+        .insert([
+          {
+            donor_id: user.id,
+            request_id: requestId,
+            amount: amount,
+          },
+        ]);
+
+      if (donationError) throw donationError;
+
+      // Update request status to fulfilled
+      const { error: updateError } = await supabase
+        .from("blood_requests")
+        .update({ status: "fulfilled" })
+        .eq("id", requestId);
+
+      if (updateError) throw updateError;
+
+      toast({
+        title: "Donation recorded!",
+        description: `Thank you for your donation of $${amount.toFixed(2)}.`,
+      });
+
+      setDonationDialogOpen(null);
+      setDonationAmount("");
+      loadRequests();
     } catch (error: any) {
       toast({
         title: "Error",
-        description: error.message,
+        description: error.message || "Failed to process donation.",
         variant: "destructive",
       });
     } finally {
-      setToggling(false);
+      setDonating(null);
     }
   };
 
   if (loading) {
     return (
-      <Layout role="donor">
-        <div className="text-center py-12">Loading...</div>
-      </Layout>
-    );
-  }
-
-  if (!donorProfile) {
-    return (
-      <Layout role="donor">
-        <Card className="max-w-2xl mx-auto">
-          <CardHeader>
-            <CardTitle>Complete Your Donor Profile</CardTitle>
-            <CardDescription>
-              Please complete your profile to start helping those in need.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Link to="/donor/profile">
-              <Button variant="hero" className="w-full">
-                Complete Profile
-              </Button>
-            </Link>
-          </CardContent>
-        </Card>
-      </Layout>
+      <div className="min-h-screen bg-gradient-subtle">
+        <div className="container mx-auto px-4 py-8">
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          </div>
+        </div>
+      </div>
     );
   }
 
   return (
-    <Layout role="donor">
-      <div className="space-y-6 max-w-6xl mx-auto">
-        <div className="flex items-center justify-between">
+    <div className="min-h-screen bg-gradient-subtle">
+      <div className="container mx-auto px-4 py-8">
+        <div className="max-w-6xl mx-auto space-y-6">
           <div>
             <h1 className="text-3xl font-bold">Donor Dashboard</h1>
-            <p className="text-muted-foreground">Manage your availability and requests</p>
+            <p className="text-muted-foreground">Help those in urgent need</p>
           </div>
-        </div>
 
-        {/* Availability Toggle Card */}
-        <Card className="border-2 shadow-elevated">
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <div>
-                <CardTitle className="text-2xl">Donation Status</CardTitle>
-                <CardDescription>Toggle your availability for blood donation</CardDescription>
-              </div>
-              <Badge 
-                variant={donorProfile.is_available ? "default" : "secondary"}
-                className="text-lg px-4 py-2"
-              >
-                {donorProfile.is_available ? "Available" : "Unavailable"}
-              </Badge>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="space-y-1">
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Droplets className="h-4 w-4" />
-                  Blood Type
-                </div>
-                <div className="text-2xl font-bold text-primary">{donorProfile.blood_type}</div>
-              </div>
-              <div className="space-y-1">
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <MapPin className="h-4 w-4" />
-                  Location
-                </div>
-                <div className="text-sm font-medium truncate">{donorProfile.location_address}</div>
-              </div>
-              <div className="space-y-1">
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Calendar className="h-4 w-4" />
-                  Last Donation
-                </div>
-                <div className="text-sm font-medium">
-                  {donorProfile.last_donation_date 
-                    ? new Date(donorProfile.last_donation_date).toLocaleDateString()
-                    : "Never"}
-                </div>
-              </div>
-              <div className="space-y-1">
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Activity className="h-4 w-4" />
-                  Requests
-                </div>
-                <div className="text-sm font-medium">{requests.length} total</div>
-              </div>
-            </div>
-            
-            <Button 
-              onClick={toggleAvailability}
-              disabled={toggling}
-              variant={donorProfile.is_available ? "outline" : "hero"}
-              size="lg"
-              className="w-full"
-            >
-              {toggling ? "Updating..." : donorProfile.is_available 
-                ? "Mark as Unavailable" 
-                : "Mark as Available"}
-            </Button>
-          </CardContent>
-        </Card>
-
-        {/* Recent Requests */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Recent Blood Requests</CardTitle>
-            <CardDescription>People who have requested blood from you</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {requests.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">
-                No requests yet. When seekers find you, they'll appear here.
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {requests.map((request) => (
-                  <div
-                    key={request.id}
-                    className="flex items-center justify-between p-4 border rounded-lg hover:bg-accent/50 transition-colors"
-                  >
-                    <div className="space-y-1">
-                      <div className="font-medium">{request.profiles?.full_name}</div>
-                      <div className="text-sm text-muted-foreground">
-                        {request.profiles?.email}
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        {new Date(request.created_at).toLocaleDateString()}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <Badge variant={
-                        request.status === "pending" ? "default" :
-                        request.status === "fulfilled" ? "secondary" : "outline"
-                      }>
-                        {request.status}
-                      </Badge>
-                      <Badge variant="outline">{request.blood_type}</Badge>
-                    </div>
+          {/* Welcome Card */}
+          {profile && (
+            <Card>
+              <CardContent className="pt-6">
+                <div className="flex items-center gap-4">
+                  <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center">
+                    <Heart className="h-8 w-8 text-primary" />
                   </div>
+                  <div>
+                    <h2 className="text-xl font-semibold">Welcome, {profile.full_name}!</h2>
+                    <p className="text-muted-foreground">Thank you for being a donor. Your generosity saves lives.</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Urgent Needs Section */}
+          <div>
+            <div className="flex items-center gap-2 mb-4">
+              <AlertCircle className="h-5 w-5 text-destructive" />
+              <h2 className="text-2xl font-semibold">Urgent Needs</h2>
+            </div>
+
+            {requests.length === 0 ? (
+              <Card>
+                <CardContent className="pt-6">
+                  <div className="text-center py-8 text-muted-foreground">
+                    <Droplets className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                    <p>No urgent requests at the moment.</p>
+                    <p className="text-sm mt-2">Check back later to help those in need.</p>
+                  </div>
+                </CardContent>
+              </Card>
+            ) : (
+              <div className="grid md:grid-cols-2 gap-4">
+                {requests.map((request) => (
+                  <Card key={request.id} className="hover:shadow-elevated transition-shadow">
+                    <CardHeader>
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <CardTitle className="text-lg">
+                            Blood Donation Request
+                          </CardTitle>
+                          <CardDescription className="mt-1">
+                            {request.profiles?.full_name || "Anonymous Seeker"}
+                          </CardDescription>
+                        </div>
+                        <Badge
+                          variant={
+                            request.urgency_level === "high"
+                              ? "destructive"
+                              : request.urgency_level === "medium"
+                              ? "default"
+                              : "secondary"
+                          }
+                        >
+                          {request.urgency_level || "Normal"}
+                        </Badge>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      {request.message && (
+                        <p className="text-sm text-muted-foreground line-clamp-2">
+                          {request.message}
+                        </p>
+                      )}
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline">
+                          <Droplets className="h-3 w-3 mr-1" />
+                          {request.blood_type || "Any"}
+                        </Badge>
+                        <span className="text-xs text-muted-foreground">
+                          {new Date(request.created_at).toLocaleDateString()}
+                        </span>
+                      </div>
+
+                      <Dialog
+                        open={donationDialogOpen === request.id}
+                        onOpenChange={(open) => {
+                          setDonationDialogOpen(open ? request.id : null);
+                          if (!open) setDonationAmount("");
+                        }}
+                      >
+                        <DialogTrigger asChild>
+                          <Button variant="hero" className="w-full">
+                            <Heart className="h-4 w-4 mr-2" />
+                            Donate Now
+                          </Button>
+                        </DialogTrigger>
+                        <DialogContent>
+                          <DialogHeader>
+                            <DialogTitle>Record Your Donation</DialogTitle>
+                            <DialogDescription>
+                              Enter the amount you're donating to help fulfill this request.
+                            </DialogDescription>
+                          </DialogHeader>
+                          <div className="space-y-4">
+                            <div className="space-y-2">
+                              <Label htmlFor="amount">Donation Amount ($)</Label>
+                              <Input
+                                id="amount"
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                placeholder="0.00"
+                                value={donationAmount}
+                                onChange={(e) => setDonationAmount(e.target.value)}
+                              />
+                            </div>
+                            <div className="flex gap-2">
+                              <Button
+                                variant="outline"
+                                onClick={() => {
+                                  setDonationDialogOpen(null);
+                                  setDonationAmount("");
+                                }}
+                                className="flex-1"
+                              >
+                                Cancel
+                              </Button>
+                              <Button
+                                onClick={() => handleDonate(request.id)}
+                                disabled={donating === request.id}
+                                className="flex-1"
+                              >
+                                {donating === request.id && (
+                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                )}
+                                Confirm Donation
+                              </Button>
+                            </div>
+                          </div>
+                        </DialogContent>
+                      </Dialog>
+                    </CardContent>
+                  </Card>
                 ))}
               </div>
             )}
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       </div>
-    </Layout>
+    </div>
   );
 };
 

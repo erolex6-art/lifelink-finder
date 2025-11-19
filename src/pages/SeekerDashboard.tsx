@@ -1,286 +1,344 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import Layout from "@/components/Layout";
+import { useAuth } from "@/contexts/AuthContext";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Badge } from "@/components/ui/badge";
-import { useToast } from "@/hooks/use-toast";
-import { Search, MapPin, Send, Droplets } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useToast } from "@/hooks/use-toast";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Loader2, Plus, AlertCircle, CheckCircle, Clock } from "lucide-react";
+
+interface Request {
+  id: string;
+  seeker_id: string;
+  message?: string;
+  status: "pending" | "fulfilled" | "cancelled";
+  created_at: string;
+  blood_type?: string;
+  urgency_level?: string;
+}
 
 const SeekerDashboard = () => {
+  const { user, profile } = useAuth();
   const { toast } = useToast();
-  const [donors, setDonors] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
-  const [searchBloodType, setSearchBloodType] = useState<string>("");
-  const [sendingRequest, setSendingRequest] = useState<string | null>(null);
-  const [requestMessage, setRequestMessage] = useState("");
+  const [requests, setRequests] = useState<Request[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [formData, setFormData] = useState({
+    description: "",
+    blood_type: "",
+    urgency_level: "normal",
+  });
 
   useEffect(() => {
-    getUserLocation();
-  }, []);
-
-  const getUserLocation = () => {
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          setUserLocation({
-            lat: position.coords.latitude,
-            lng: position.coords.longitude,
-          });
-        },
-        (error) => {
-          console.error("Error getting location:", error);
-          toast({
-            title: "Location access denied",
-            description: "Please enable location to find nearby donors.",
-            variant: "destructive",
-          });
-        }
-      );
+    if (user) {
+      loadRequests();
     }
-  };
+  }, [user]);
 
-  const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
-    const R = 6371; // Earth's radius in km
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-      Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-  };
+  const loadRequests = async () => {
+    if (!user) return;
 
-  const searchDonors = async () => {
-    if (!searchBloodType) {
-      toast({
-        title: "Select blood type",
-        description: "Please select a blood type to search.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setLoading(true);
     try {
-      const { data } = await supabase
-        .from("donor_profiles")
-        .select(`
-          *,
-          profiles:user_id (full_name, email, phone)
-        `)
-        .eq("blood_type", searchBloodType as any)
-        .eq("is_available", true);
+      const { data, error } = await supabase
+        .from("blood_requests")
+        .select("*")
+        .eq("seeker_id", user.id)
+        .order("created_at", { ascending: false });
 
-      let donorsWithDistance = data || [];
+      if (error) throw error;
 
-      if (userLocation) {
-        donorsWithDistance = donorsWithDistance.map((donor) => ({
-          ...donor,
-          distance: calculateDistance(
-            userLocation.lat,
-            userLocation.lng,
-            donor.location_lat,
-            donor.location_lng
-          ),
-        })).sort((a, b) => a.distance - b.distance);
-      }
-
-      setDonors(donorsWithDistance);
-      
-      if (donorsWithDistance.length === 0) {
-        toast({
-          title: "No donors found",
-          description: "No available donors found with this blood type.",
-        });
-      }
-    } catch (error: any) {
+      setRequests((data as Request[]) || []);
+    } catch (error) {
+      console.error("Error loading requests:", error);
       toast({
         title: "Error",
-        description: error.message,
+        description: "Failed to load your requests. Please try again later.",
         variant: "destructive",
       });
+      setRequests([]);
     } finally {
       setLoading(false);
     }
   };
 
-  const sendBloodRequest = async (donorId: string, bloodType: string) => {
-    setSendingRequest(donorId);
+  const handleCreateRequest = async () => {
+    if (!user) return;
+
+    if (!formData.description || !formData.blood_type) {
+      toast({
+        title: "Missing information",
+        description: "Please fill in all required fields.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setCreating(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      // Create the request - donor_id is set to seeker_id as placeholder (null would be better but schema requires it)
+      const newRequest = {
+        seeker_id: user.id,
+        donor_id: user.id, // Placeholder - will be updated when a donor responds
+        message: formData.description,
+        blood_type: formData.blood_type,
+        urgency_level: formData.urgency_level,
+        status: "pending" as const,
+      };
 
-      const { error: requestError } = await supabase
+      console.log("Creating request:", newRequest);
+
+      const { data, error } = await supabase
         .from("blood_requests")
-        .insert([{
-          seeker_id: user.id,
-          donor_id: donorId,
-          blood_type: bloodType as any,
-          message: requestMessage,
-          urgency_level: "high",
-        }]);
+        .insert([newRequest]);
 
-      if (requestError) throw requestError;
+      if (error) {
+        console.error("Error creating request:", error);
+        throw error;
+      }
 
-      // Create notification for donor
-      const { error: notificationError } = await supabase
-        .from("notifications")
-        .insert({
-          user_id: donorId,
-          title: "New Blood Request",
-          message: `You have a new blood donation request for ${bloodType}.`,
-          type: "blood_request",
-        });
-
-      if (notificationError) throw notificationError;
+      console.log("Request created successfully:", data);
 
       toast({
-        title: "Request sent!",
-        description: "The donor will be notified about your request.",
+        title: "Request created!",
+        description: "Your request has been submitted. Donors can now see it and respond.",
       });
 
-      setRequestMessage("");
+      setCreateDialogOpen(false);
+      setFormData({
+        description: "",
+        blood_type: "",
+        urgency_level: "normal",
+      });
+      
+      // Reload requests to show the new one
+      loadRequests();
     } catch (error: any) {
+      console.error("Failed to create request:", error);
       toast({
         title: "Error",
-        description: error.message,
+        description: error.message || "Failed to create request.",
         variant: "destructive",
       });
     } finally {
-      setSendingRequest(null);
+      setCreating(false);
     }
   };
 
-  return (
-    <Layout role="seeker">
-      <div className="space-y-6 max-w-6xl mx-auto">
-        <div>
-          <h1 className="text-3xl font-bold">Find Blood Donors</h1>
-          <p className="text-muted-foreground">Search for available donors by blood type</p>
+  const stats = {
+    total: requests.length,
+    pending: requests.filter((r) => r.status === "pending").length,
+    fulfilled: requests.filter((r) => r.status === "fulfilled").length,
+    received: requests.filter((r) => r.status === "fulfilled").length, // Same as fulfilled for now
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-subtle">
+        <div className="container mx-auto px-4 py-8">
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          </div>
         </div>
+      </div>
+    );
+  }
 
-        {/* Search Card */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Search Donors</CardTitle>
-            <CardDescription>
-              Find available donors nearby based on blood type
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex flex-col sm:flex-row gap-4">
-              <div className="flex-1 space-y-2">
-                <Label>Blood Type</Label>
-                <Select value={searchBloodType} onValueChange={setSearchBloodType}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select blood type" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="A+">A+</SelectItem>
-                    <SelectItem value="A-">A-</SelectItem>
-                    <SelectItem value="B+">B+</SelectItem>
-                    <SelectItem value="B-">B-</SelectItem>
-                    <SelectItem value="AB+">AB+</SelectItem>
-                    <SelectItem value="AB-">AB-</SelectItem>
-                    <SelectItem value="O+">O+</SelectItem>
-                    <SelectItem value="O-">O-</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex items-end">
-                <Button onClick={searchDonors} disabled={loading} size="lg">
-                  <Search className="h-5 w-5" />
-                  {loading ? "Searching..." : "Search Donors"}
-                </Button>
-              </div>
+  return (
+    <div className="min-h-screen bg-gradient-subtle">
+      <div className="container mx-auto px-4 py-8">
+        <div className="max-w-6xl mx-auto space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-3xl font-bold">Seeker Dashboard</h1>
+              <p className="text-muted-foreground">Manage your blood donation requests</p>
             </div>
-            {userLocation && (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <MapPin className="h-4 w-4" />
-                Location detected - showing nearest donors first
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Results */}
-        {donors.length > 0 && (
-          <div className="space-y-4">
-            <h2 className="text-2xl font-semibold">Available Donors ({donors.length})</h2>
-            {donors.map((donor) => (
-              <Card key={donor.id} className="hover:shadow-elevated transition-shadow">
-                <CardContent className="pt-6">
-                  <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-                    <div className="space-y-3 flex-1">
-                      <div className="flex items-center gap-3">
-                        <div className="w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center">
-                          <Droplets className="h-6 w-6 text-primary" />
-                        </div>
-                        <div>
-                          <div className="font-semibold text-lg">{donor.profiles?.full_name}</div>
-                          <div className="text-sm text-muted-foreground">{donor.profiles?.email}</div>
-                        </div>
-                      </div>
-                      
-                      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                        <div className="space-y-1">
-                          <div className="text-xs text-muted-foreground">Blood Type</div>
-                          <Badge variant="outline" className="text-sm">
-                            {donor.blood_type}
-                          </Badge>
-                        </div>
-                        <div className="space-y-1">
-                          <div className="text-xs text-muted-foreground">Location</div>
-                          <div className="text-sm truncate">{donor.location_address}</div>
-                        </div>
-                        {donor.distance && (
-                          <div className="space-y-1">
-                            <div className="text-xs text-muted-foreground">Distance</div>
-                            <div className="text-sm font-medium">
-                              {donor.distance.toFixed(1)} km away
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                      
-                      {sendingRequest === donor.user_id && (
-                        <div className="space-y-2">
-                          <Label>Message (Optional)</Label>
-                          <Textarea
-                            placeholder="Add a message to your request..."
-                            value={requestMessage}
-                            onChange={(e) => setRequestMessage(e.target.value)}
-                            rows={2}
-                          />
-                        </div>
-                      )}
-                    </div>
-
-                    <Button
-                      onClick={() => sendBloodRequest(donor.user_id, donor.blood_type)}
-                      disabled={sendingRequest !== null}
-                      variant="hero"
-                      size="lg"
-                      className="md:self-start"
+            <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+              <DialogTrigger asChild>
+                <Button>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Create Request
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Create New Request</DialogTitle>
+                  <DialogDescription>
+                    Submit a new blood donation request. Donors will be notified.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="blood_type">Blood Type *</Label>
+                    <Select
+                      value={formData.blood_type}
+                      onValueChange={(value) => setFormData({ ...formData, blood_type: value })}
                     >
-                      <Send className="h-5 w-5" />
-                      {sendingRequest === donor.user_id ? "Sending..." : "Send Request"}
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select blood type" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="A+">A+</SelectItem>
+                        <SelectItem value="A-">A-</SelectItem>
+                        <SelectItem value="B+">B+</SelectItem>
+                        <SelectItem value="B-">B-</SelectItem>
+                        <SelectItem value="AB+">AB+</SelectItem>
+                        <SelectItem value="AB-">AB-</SelectItem>
+                        <SelectItem value="O+">O+</SelectItem>
+                        <SelectItem value="O-">O-</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="urgency">Urgency Level</Label>
+                    <Select
+                      value={formData.urgency_level}
+                      onValueChange={(value) => setFormData({ ...formData, urgency_level: value })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="normal">Normal</SelectItem>
+                        <SelectItem value="medium">Medium</SelectItem>
+                        <SelectItem value="high">High</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="description">Description *</Label>
+                    <Textarea
+                      id="description"
+                      placeholder="Provide details about your request..."
+                      value={formData.description}
+                      onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                      rows={4}
+                      required
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setCreateDialogOpen(false);
+                        setFormData({
+                          description: "",
+                          blood_type: "",
+                          urgency_level: "normal",
+                        });
+                      }}
+                      className="flex-1"
+                    >
+                      Cancel
+                    </Button>
+                    <Button onClick={handleCreateRequest} disabled={creating} className="flex-1">
+                      {creating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      Submit Request
                     </Button>
                   </div>
-                </CardContent>
-              </Card>
-            ))}
+                </div>
+              </DialogContent>
+            </Dialog>
           </div>
-        )}
+
+          {/* Status Overview */}
+          <div className="grid md:grid-cols-3 gap-4">
+            <Card>
+              <CardContent className="pt-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm text-muted-foreground">Total Requests</div>
+                    <div className="text-3xl font-bold">{stats.total}</div>
+                  </div>
+                  <AlertCircle className="h-8 w-8 text-primary" />
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm text-muted-foreground">Pending</div>
+                    <div className="text-3xl font-bold text-yellow-600">{stats.pending}</div>
+                  </div>
+                  <Clock className="h-8 w-8 text-yellow-600" />
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm text-muted-foreground">Received</div>
+                    <div className="text-3xl font-bold text-green-600">{stats.received}</div>
+                  </div>
+                  <CheckCircle className="h-8 w-8 text-green-600" />
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Requests List */}
+          <Card>
+            <CardHeader>
+              <CardTitle>My Requests</CardTitle>
+              <CardDescription>View and manage your blood donation requests</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {requests.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground">
+                  <AlertCircle className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                  <p>No requests yet.</p>
+                  <p className="text-sm mt-2">Create your first request to get started.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {requests.map((request) => (
+                    <div
+                      key={request.id}
+                      className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 border rounded-lg hover:bg-accent/50 transition-colors"
+                    >
+                      <div className="flex-1 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-semibold">Blood Donation Request</h3>
+                          <Badge
+                            variant={
+                              request.status === "fulfilled"
+                                ? "default"
+                                : request.status === "pending"
+                                ? "secondary"
+                                : "outline"
+                            }
+                          >
+                            {request.status}
+                          </Badge>
+                          {request.blood_type && (
+                            <Badge variant="outline">{request.blood_type}</Badge>
+                          )}
+                        </div>
+                        {request.message && (
+                          <p className="text-sm text-muted-foreground line-clamp-2">
+                            {request.message}
+                          </p>
+                        )}
+                        <p className="text-xs text-muted-foreground">
+                          Created: {new Date(request.created_at).toLocaleDateString()}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
       </div>
-    </Layout>
+    </div>
   );
 };
 

@@ -34,6 +34,30 @@ function setStoredRoles(roles: Record<string, string>) {
   localStorage.setItem("lifelink_roles", JSON.stringify(roles));
 }
 
+function getStoredProfiles() {
+  try {
+    return JSON.parse(localStorage.getItem("lifelink_profiles") || "{}");
+  } catch (e) {
+    return {};
+  }
+}
+
+function setStoredProfiles(profiles: Record<string, any>) {
+  localStorage.setItem("lifelink_profiles", JSON.stringify(profiles));
+}
+
+function getStoredData(table: string) {
+  try {
+    return JSON.parse(localStorage.getItem(`lifelink_${table}`) || "[]");
+  } catch (e) {
+    return [];
+  }
+}
+
+function setStoredData(table: string, data: any[]) {
+  localStorage.setItem(`lifelink_${table}`, JSON.stringify(data));
+}
+
 function notifyListeners(event: string, session: any) {
   listeners.forEach((l) => {
     try {
@@ -73,6 +97,18 @@ const auth = {
     users[email] = user;
     setStoredUsers(users);
 
+    // Create profile
+    const profiles = getStoredProfiles();
+    profiles[id] = {
+      id,
+      email,
+      full_name: options?.data?.full_name ?? "User",
+      phone: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    setStoredProfiles(profiles);
+
     // Persist session and user
     const session = { user: { id, email } };
     localStorage.setItem("lifelink_session", JSON.stringify(session));
@@ -96,6 +132,20 @@ const auth = {
       user = { id, email, password, full_name: "" };
       users[email] = user;
       setStoredUsers(users);
+
+      // Create default profile if doesn't exist
+      const profiles = getStoredProfiles();
+      if (!profiles[user.id]) {
+        profiles[user.id] = {
+          id: user.id,
+          email,
+          full_name: email.split("@")[0],
+          phone: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        setStoredProfiles(profiles);
+      }
     }
 
     const session = { user: { id: user.id, email } };
@@ -116,19 +166,132 @@ const auth = {
 function from(table: string) {
   const builder: any = {
     _table: table,
+    _operation: 'select',
+    _updates: null,
     _select(cols: string) {
       this._cols = cols;
       return this;
     },
-    select(cols: string) { return this._select(cols); },
-    async eq(col: string, val: any) {
-      // Only user_roles is queried currently by app
-      if (table === "user_roles" && col === "user_id") {
-        const roles = getStoredRoles();
-        const role = roles[val];
-        return { data: role ? [{ role }] : [], error: null };
+    _where: [] as Array<{ col: string; val: any }>,
+    select(cols: string) { 
+      this._cols = cols;
+      this._operation = 'select';
+      return this;
+    },
+    eq(col: string, val: any) {
+      this._where.push({ col, val });
+      return this;
+    },
+    async single() {
+      const self = this;
+      return new Promise((resolve) => {
+        self.then((result: any) => {
+          if (result.data && result.data.length > 0) {
+            resolve({ data: result.data[0], error: null });
+          } else {
+            resolve({ data: null, error: { message: "No rows returned" } });
+          }
+        });
+      });
+    },
+    async order(col: string, options?: { ascending?: boolean }) {
+      // Apply ordering after getting data
+      this._orderBy = { col, ascending: options?.ascending !== false };
+      return this;
+    },
+    async limit(count: number) {
+      this._limit = count;
+      return this;
+    },
+    async then(resolve: any) {
+      // Handle update operation
+      if (this._operation === 'update' && this._updates) {
+        if (table === "profiles") {
+          const profiles = getStoredProfiles();
+          this._where.forEach(({ col, val }: any) => {
+            if (col === "id" && profiles[val]) {
+              profiles[val] = {
+                ...profiles[val],
+                ...this._updates,
+                updated_at: new Date().toISOString(),
+              };
+            }
+          });
+          setStoredProfiles(profiles);
+          return resolve({ data: null, error: null });
+        } else {
+          const data = getStoredData(table);
+          this._where.forEach(({ col, val }: any) => {
+            const index = data.findIndex((item: any) => item[col] === val);
+            if (index !== -1) {
+              data[index] = {
+                ...data[index],
+                ...this._updates,
+                updated_at: new Date().toISOString(),
+              };
+            }
+          });
+          setStoredData(table, data);
+          return resolve({ data: null, error: null });
+        }
       }
-      return { data: [], error: null };
+
+      // Handle select operation
+      let data: any[] = [];
+
+      // Handle profiles table
+      if (table === "profiles") {
+        const profiles = getStoredProfiles();
+        data = Object.values(profiles);
+        
+        // Apply filters
+        this._where.forEach(({ col, val }: any) => {
+          if (col === "id") {
+            data = data.filter((p: any) => p.id === val);
+          }
+        });
+      }
+      // Handle user_roles table
+      else if (table === "user_roles") {
+        const roles = getStoredRoles();
+        this._where.forEach(({ col, val }: any) => {
+          if (col === "user_id") {
+            const role = roles[val];
+            if (role) {
+              data = [{ user_id: val, role, id: val }];
+            }
+          }
+        });
+      }
+      // Handle other tables (donor_profiles, blood_requests, donations, etc.)
+      else {
+        data = getStoredData(table);
+        
+        // Apply filters
+        this._where.forEach(({ col, val }: any) => {
+          data = data.filter((item: any) => item[col] === val);
+        });
+      }
+
+      // Apply ordering
+      if (this._orderBy) {
+        data.sort((a: any, b: any) => {
+          const aVal = a[this._orderBy.col];
+          const bVal = b[this._orderBy.col];
+          if (this._orderBy.ascending) {
+            return aVal > bVal ? 1 : aVal < bVal ? -1 : 0;
+          } else {
+            return aVal < bVal ? 1 : aVal > bVal ? -1 : 0;
+          }
+        });
+      }
+
+      // Apply limit
+      if (this._limit) {
+        data = data.slice(0, this._limit);
+      }
+
+      return resolve({ data, error: null });
     },
     async insert(rows: any[]) {
       if (table === "user_roles") {
@@ -140,14 +303,59 @@ function from(table: string) {
         });
         setStoredRoles(roles);
         return { data: rows, error: null };
+      } else if (table === "profiles") {
+        const profiles = getStoredProfiles();
+        rows.forEach((r) => {
+          if (r.id) {
+            profiles[r.id] = {
+              ...r,
+              created_at: r.created_at || new Date().toISOString(),
+              updated_at: r.updated_at || new Date().toISOString(),
+            };
+          }
+        });
+        setStoredProfiles(profiles);
+        return { data: rows, error: null };
+      } else {
+        // Store in table-specific storage
+        const existing = getStoredData(table);
+        const newRows = rows.map((r) => ({
+          ...r,
+          id: r.id || `local_${Date.now()}_${Math.random()}`,
+          created_at: r.created_at || new Date().toISOString(),
+          updated_at: r.updated_at || new Date().toISOString(),
+        }));
+        setStoredData(table, [...existing, ...newRows]);
+        return { data: newRows, error: null };
       }
-      return { data: rows, error: null };
     },
-    async update(_data: any) {
-      return { data: [], error: null };
+    async upsert(rows: any[], options?: any) {
+      // For simplicity, treat upsert as insert (in a real implementation, would check for existing records)
+      return this.insert(rows);
+    },
+    update(updates: any) {
+      this._updates = updates;
+      this._operation = 'update';
+      return this;
     },
     async delete() {
-      return { data: [], error: null };
+      if (table === "profiles") {
+        const profiles = getStoredProfiles();
+        this._where.forEach(({ col, val }: any) => {
+          if (col === "id") {
+            delete profiles[val];
+          }
+        });
+        setStoredProfiles(profiles);
+        return { data: null, error: null };
+      } else {
+        let data = getStoredData(table);
+        this._where.forEach(({ col, val }: any) => {
+          data = data.filter((item: any) => item[col] !== val);
+        });
+        setStoredData(table, data);
+        return { data: null, error: null };
+      }
     }
   };
 

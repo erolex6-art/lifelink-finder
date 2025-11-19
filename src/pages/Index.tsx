@@ -1,18 +1,83 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { useEffect } from "react";
+import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
-import { Heart, Droplets, Shield, Users } from "lucide-react";
+import { Heart, Droplets, Shield, Users, Loader2 } from "lucide-react";
 
 const Index = () => {
+  const navigate = useNavigate();
+  const { user, role, loading } = useAuth();
+
+  // Redirect authenticated users to their dashboard
+  useEffect(() => {
+    console.log("Index - Auth State:", { user: !!user, role, loading });
+    
+    if (!loading && user) {
+      // If role is loaded, redirect to appropriate dashboard
+      if (role === "donor") {
+        console.log("Redirecting to donor dashboard");
+        navigate("/donor-dashboard", { replace: true });
+      } else if (role === "seeker") {
+        console.log("Redirecting to seeker dashboard");
+        navigate("/seeker-dashboard", { replace: true });
+      } else if (role === "admin") {
+        console.log("Redirecting to admin dashboard");
+        navigate("/admin", { replace: true });
+      } else if (role === null) {
+        console.log("No role found, redirecting to profile");
+        // If user exists but no role, redirect to profile to complete setup
+        navigate("/profile", { replace: true });
+      }
+    }
+  }, [user, role, loading, navigate]);
+
+  // Show loading state while checking auth or while redirecting
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-subtle">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  // If user is logged in but redirect hasn't happened yet, show manual options
+  if (user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-subtle">
+        <div className="text-center space-y-6">
+          <Loader2 className="h-8 w-8 animate-spin text-primary mx-auto" />
+          <p className="text-lg text-muted-foreground">Redirecting to your dashboard...</p>
+          
+          {/* Fallback buttons in case redirect doesn't work */}
+          <div className="space-y-2 pt-4">
+            <p className="text-sm text-muted-foreground">If not redirected, click below:</p>
+            <div className="flex gap-2 justify-center">
+              <Button onClick={() => navigate("/donor-dashboard")} variant="outline" size="sm">
+                Donor Dashboard
+              </Button>
+              <Button onClick={() => navigate("/seeker-dashboard")} variant="outline" size="sm">
+                Seeker Dashboard
+              </Button>
+              <Button onClick={() => navigate("/profile")} variant="outline" size="sm">
+                Profile
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-subtle">
       {/* Hero Section */}
       <header className="container mx-auto px-4 py-6">
         <nav className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
+          <Link to="/" className="flex items-center gap-2">
             <Droplets className="h-8 w-8 text-primary" />
             <span className="text-2xl font-bold text-foreground">LifeLink</span>
-          </div>
-          <Link to="/auth">
+          </Link>
+          <Link to="/login">
             <Button variant="outline">Sign In</Button>
           </Link>
         </nav>
@@ -39,13 +104,13 @@ const Index = () => {
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 pt-4">
-            <Link to="/auth?role=donor">
+            <Link to="/register?role=donor">
               <Button variant="hero" size="xl" className="w-full sm:w-auto">
                 <Droplets className="h-5 w-5" />
                 Become a Donor
               </Button>
             </Link>
-            <Link to="/auth?role=seeker">
+            <Link to="/register?role=seeker">
               <Button variant="outline" size="xl" className="w-full sm:w-auto">
                 <Users className="h-5 w-5" />
                 Find a Donor
