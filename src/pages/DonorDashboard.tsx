@@ -30,7 +30,8 @@ const DonorDashboard = () => {
   const [requests, setRequests] = useState<Request[]>([]);
   const [loading, setLoading] = useState(true);
   const [donating, setDonating] = useState<string | null>(null);
-  const [donationAmount, setDonationAmount] = useState("");
+  const [donationUnits, setDonationUnits] = useState("");
+  const [donationNote, setDonationNote] = useState("");
   const [donationDialogOpen, setDonationDialogOpen] = useState<string | null>(null);
 
   useEffect(() => {
@@ -80,14 +81,14 @@ const DonorDashboard = () => {
     }
   };
 
-  const handleDonate = async (requestId: string) => {
+  const handleDonate = async (requestId: string, request: Request) => {
     if (!user) return;
 
-    const amount = parseFloat(donationAmount);
-    if (isNaN(amount) || amount <= 0) {
+    const units = parseFloat(donationUnits || "0");
+    if (isNaN(units) || units <= 0) {
       toast({
-        title: "Invalid amount",
-        description: "Please enter a valid donation amount.",
+        title: "Invalid units",
+        description: "Please enter a valid number of blood units.",
         variant: "destructive",
       });
       return;
@@ -95,39 +96,44 @@ const DonorDashboard = () => {
 
     setDonating(requestId);
     try {
-      // Create donation record
-      const { error: donationError } = await supabase
-        .from("donations")
-        .insert([
-          {
-            donor_id: user.id,
-            request_id: requestId,
-            amount: amount,
-          },
-        ]);
-
-      if (donationError) throw donationError;
-
-      // Update request status to fulfilled
+      // Update request: set donor and mark fulfilled
       const { error: updateError } = await supabase
         .from("blood_requests")
-        .update({ status: "fulfilled" })
+        .update({ status: "fulfilled", donor_id: user.id })
         .eq("id", requestId);
 
       if (updateError) throw updateError;
 
+      // Insert a notification for the seeker so they know a donor committed
+      const seekerId = request.seeker_id;
+      const donorName = (profile && profile.full_name) || "A donor";
+      const message = `${donorName} has pledged ${units} unit(s) of ${request.blood_type || "blood"}. ${donationNote || ""}`;
+
+      const { error: notifError } = await supabase.from("notifications").insert([
+        {
+          user_id: seekerId,
+          title: "Blood donation pledged",
+          message,
+          type: "donation",
+          related_request_id: requestId,
+        },
+      ]);
+
+      if (notifError) throw notifError;
+
       toast({
-        title: "Donation recorded!",
-        description: `Thank you for your donation of $${amount.toFixed(2)}.`,
+        title: "Thank you!",
+        description: `You pledged ${units} unit(s). The seeker has been notified.`,
       });
 
       setDonationDialogOpen(null);
-      setDonationAmount("");
+      setDonationUnits("");
+      setDonationNote("");
       loadRequests();
     } catch (error: any) {
       toast({
         title: "Error",
-        description: error.message || "Failed to process donation.",
+        description: error.message || "Failed to record donation.",
         variant: "destructive",
       });
     } finally {
@@ -237,33 +243,45 @@ const DonorDashboard = () => {
                         open={donationDialogOpen === request.id}
                         onOpenChange={(open) => {
                           setDonationDialogOpen(open ? request.id : null);
-                          if (!open) setDonationAmount("");
+                          if (!open) {
+                            setDonationUnits("");
+                            setDonationNote("");
+                          }
                         }}
                       >
                         <DialogTrigger asChild>
                           <Button variant="hero" className="w-full">
                             <Heart className="h-4 w-4 mr-2" />
-                            Donate Now
+                            Pledge Blood
                           </Button>
                         </DialogTrigger>
                         <DialogContent>
                           <DialogHeader>
-                            <DialogTitle>Record Your Donation</DialogTitle>
+                            <DialogTitle>Record Blood Donation</DialogTitle>
                             <DialogDescription>
-                              Enter the amount you're donating to help fulfill this request.
+                              Confirm how many units you're pledging and add an optional note.
                             </DialogDescription>
                           </DialogHeader>
                           <div className="space-y-4">
                             <div className="space-y-2">
-                              <Label htmlFor="amount">Donation Amount ($)</Label>
+                              <Label htmlFor="units">Units (e.g. 1)</Label>
                               <Input
-                                id="amount"
+                                id="units"
                                 type="number"
-                                min="0"
-                                step="0.01"
-                                placeholder="0.00"
-                                value={donationAmount}
-                                onChange={(e) => setDonationAmount(e.target.value)}
+                                min="1"
+                                step="1"
+                                placeholder="1"
+                                value={donationUnits}
+                                onChange={(e) => setDonationUnits(e.target.value)}
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label htmlFor="note">Note (optional)</Label>
+                              <Input
+                                id="note"
+                                placeholder="Any message or contact info"
+                                value={donationNote}
+                                onChange={(e) => setDonationNote(e.target.value)}
                               />
                             </div>
                             <div className="flex gap-2">
@@ -271,21 +289,22 @@ const DonorDashboard = () => {
                                 variant="outline"
                                 onClick={() => {
                                   setDonationDialogOpen(null);
-                                  setDonationAmount("");
+                                  setDonationUnits("");
+                                  setDonationNote("");
                                 }}
                                 className="flex-1"
                               >
                                 Cancel
                               </Button>
                               <Button
-                                onClick={() => handleDonate(request.id)}
+                                onClick={() => handleDonate(request.id, request)}
                                 disabled={donating === request.id}
                                 className="flex-1"
                               >
                                 {donating === request.id && (
                                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                 )}
-                                Confirm Donation
+                                Confirm Pledge
                               </Button>
                             </div>
                           </div>
