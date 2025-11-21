@@ -1,7 +1,7 @@
 # Update: This README was modified as part of Git workflow demonstration.
 
 
-# Welcome to your Lovable project
+# Welcome to your LifeLink project
 
 ## Project info
 
