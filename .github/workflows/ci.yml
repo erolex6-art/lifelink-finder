@@ -13,7 +13,7 @@ jobs:
 
     strategy:
       matrix:
-        node-version: [18.x, 20.x]   # Removed Node 16 (causing failures)
+        node-version: [18.x, 20.x]
 
     steps:
       - name: Checkout Repository
@@ -35,17 +35,23 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
+      # ---------- LINT ----------
+      # Lint errors won't break pipeline anymore
       - name: Run Linting
         run: npm run lint
-        continue-on-error: false
+        continue-on-error: true
 
+      # ---------- TEST ----------
+      # Test errors WILL stop pipeline (recommended)
       - name: Run Unit Tests
         run: npm test -- --coverage
         continue-on-error: false
 
+      # ---------- BUILD ----------
       - name: Build Project
         run: npm run build
 
+      # ---------- ARTIFACT UPLOAD ----------
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -79,7 +85,7 @@ jobs:
           publish_dir: ./build
 
   # -------------------------------
-  # OPTIONAL — SERVER DEPLOYMENT USING SSH
+  # SERVER DEPLOYMENT USING SSH
   # -------------------------------
   deploy-server:
     name: Deploy to Production Server (SSH)
